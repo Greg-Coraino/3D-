@@ -1,0 +1,373 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/index.html b/index.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab55f83f9edb53f0cfd14afd1cc06ea3f5865365
+--- /dev/null
++++ b/index.html
+@@ -0,0 +1,363 @@
++<!DOCTYPE html>
++<html lang="zh-CN">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>手势驱动的三维粒子文字</title>
++  <style>
++    :root {
++      color-scheme: dark;
++    }
++    * { box-sizing: border-box; }
++    body {
++      margin: 0;
++      font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
++      background: radial-gradient(circle at 20% 20%, #1f2b3a, #0b0f17 45%);
++      color: #e5ecff;
++      overflow: hidden;
++    }
++    #app {
++      position: fixed;
++      inset: 0;
++    }
++    #info {
++      position: fixed;
++      top: 16px;
++      left: 16px;
++      background: rgba(12, 18, 28, 0.72);
++      border: 1px solid rgba(255, 255, 255, 0.08);
++      padding: 12px 14px;
++      border-radius: 12px;
++      backdrop-filter: blur(12px);
++      max-width: 420px;
++      box-shadow: 0 16px 60px rgba(0, 0, 0, 0.35);
++    }
++    #info h1 {
++      margin: 0 0 8px;
++      font-size: 18px;
++      letter-spacing: 0.4px;
++    }
++    #info p {
++      margin: 6px 0;
++      font-size: 14px;
++      line-height: 1.4;
++      color: #bcd0ff;
++    }
++    #status {
++      margin-top: 10px;
++      font-weight: 700;
++      color: #7ee0ff;
++    }
++    #video-preview {
++      position: fixed;
++      width: 220px;
++      height: 165px;
++      bottom: 18px;
++      right: 18px;
++      border-radius: 12px;
++      overflow: hidden;
++      border: 1px solid rgba(255, 255, 255, 0.1);
++      box-shadow: 0 16px 45px rgba(0, 0, 0, 0.45);
++      background: rgba(0, 0, 0, 0.25);
++    }
++    #input-video, #output-canvas {
++      width: 100%;
++      height: 100%;
++      object-fit: cover;
++      display: block;
++    }
++    #output-canvas {
++      position: absolute;
++      top: 0;
++      left: 0;
++    }
++  </style>
++</head>
++<body>
++  <div id="app"></div>
++  <div id="info">
++    <h1>Three.js + MediaPipe 交互粒子</h1>
++    <p>用摄像头识别双手张合控制粒子群收缩与扩散。</p>
++    <p>单手手势数字切换文字：<strong>1 → Hello</strong>、<strong>2 → CSC</strong>、<strong>3 → 666</strong>。</p>
++    <p id="status">准备中...</p>
++  </div>
++  <div id="video-preview">
++    <video id="input-video" playsinline muted></video>
++    <canvas id="output-canvas"></canvas>
++  </div>
++
++  <script type="module">
++    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js';
++    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/controls/OrbitControls.js';
++    import { Hands } from 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
++    import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
++    import { drawLandmarks } from 'https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js';
++
++    const app = document.getElementById('app');
++    const statusEl = document.getElementById('status');
++    const videoElement = document.getElementById('input-video');
++    const canvasElement = document.getElementById('output-canvas');
++    const canvasCtx = canvasElement.getContext('2d');
++
++    const scene = new THREE.Scene();
++    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
++    camera.position.set(0, 0, 120);
++
++    const renderer = new THREE.WebGLRenderer({ antialias: true });
++    renderer.setSize(window.innerWidth, window.innerHeight);
++    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
++    app.appendChild(renderer.domElement);
++
++    const controls = new OrbitControls(camera, renderer.domElement);
++    controls.enableDamping = true;
++    controls.enablePan = false;
++
++    const ambient = new THREE.AmbientLight(0xffffff, 0.5);
++    const directional = new THREE.DirectionalLight(0x6fc7ff, 1.2);
++    directional.position.set(80, 120, 90);
++    scene.add(ambient, directional);
++
++    const particleCount = 3500;
++    const geometry = new THREE.BufferGeometry();
++    const positions = new Float32Array(particleCount * 3);
++    const velocities = new Float32Array(particleCount * 3);
++    const colors = new Float32Array(particleCount * 3);
++
++    const randomSphere = () => {
++      const u = Math.random();
++      const v = Math.random();
++      const theta = 2 * Math.PI * u;
++      const phi = Math.acos(2 * v - 1);
++      const r = Math.cbrt(Math.random()) * 40;
++      return new THREE.Vector3(
++        r * Math.sin(phi) * Math.cos(theta),
++        r * Math.sin(phi) * Math.sin(theta),
++        r * Math.cos(phi)
++      );
++    };
++
++    for (let i = 0; i < particleCount; i += 1) {
++      const v = randomSphere();
++      positions[i * 3] = v.x;
++      positions[i * 3 + 1] = v.y;
++      positions[i * 3 + 2] = v.z;
++      velocities[i * 3] = (Math.random() - 0.5) * 0.1;
++      velocities[i * 3 + 1] = (Math.random() - 0.5) * 0.1;
++      velocities[i * 3 + 2] = (Math.random() - 0.5) * 0.1;
++      const color = new THREE.Color().setHSL(0.58 + Math.random() * 0.1, 0.9, 0.65);
++      colors[i * 3] = color.r;
++      colors[i * 3 + 1] = color.g;
++      colors[i * 3 + 2] = color.b;
++    }
++
++    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
++    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
++
++    const material = new THREE.PointsMaterial({ size: 0.8, vertexColors: true, transparent: true, opacity: 0.95 });
++    const points = new THREE.Points(geometry, material);
++    scene.add(points);
++
++    let textTargets = [];
++    let currentText = 'Hello';
++    let spreadTarget = 70;
++    let currentSpread = spreadTarget;
++
++    const offscreen = document.createElement('canvas');
++    offscreen.width = 640;
++    offscreen.height = 320;
++    const offCtx = offscreen.getContext('2d');
++
++    function createTextTargets(label) {
++      const sampleGap = 3;
++      offCtx.clearRect(0, 0, offscreen.width, offscreen.height);
++      offCtx.fillStyle = 'black';
++      offCtx.fillRect(0, 0, offscreen.width, offscreen.height);
++      offCtx.fillStyle = 'white';
++      offCtx.textAlign = 'center';
++      offCtx.textBaseline = 'middle';
++      offCtx.font = 'bold 180px "Segoe UI", Arial, sans-serif';
++      offCtx.fillText(label, offscreen.width / 2, offscreen.height / 2);
++      const data = offCtx.getImageData(0, 0, offscreen.width, offscreen.height).data;
++      const result = [];
++      for (let y = 0; y < offscreen.height; y += sampleGap) {
++        for (let x = 0; x < offscreen.width; x += sampleGap) {
++          const alpha = data[(y * offscreen.width + x) * 4 + 3];
++          if (alpha > 128) {
++            const pos = new THREE.Vector3(
++              (x - offscreen.width / 2) * 0.25,
++              (offscreen.height / 2 - y) * 0.25,
++              0
++            );
++            result.push(pos);
++          }
++        }
++      }
++      return result.length ? result : [new THREE.Vector3(0, 0, 0)];
++    }
++
++    function updateTextTargets(label) {
++      textTargets = createTextTargets(label);
++      statusEl.innerText = `当前文字：${label}`;
++    }
++
++    updateTextTargets(currentText);
++
++    function mapParticlesToTargets() {
++      const posAttr = geometry.getAttribute('position');
++      for (let i = 0; i < particleCount; i += 1) {
++        const target = textTargets[i % textTargets.length];
++        const spreadScale = currentSpread * 0.015 + 1;
++        const tx = target.x * spreadScale;
++        const ty = target.y * spreadScale;
++        const tz = target.z * (0.5 + currentSpread * 0.003);
++
++        const px = posAttr.getX(i);
++        const py = posAttr.getY(i);
++        const pz = posAttr.getZ(i);
++
++        const dirX = tx - px;
++        const dirY = ty - py;
++        const dirZ = tz - pz;
++
++        velocities[i * 3] = velocities[i * 3] * 0.9 + dirX * 0.02;
++        velocities[i * 3 + 1] = velocities[i * 3 + 1] * 0.9 + dirY * 0.02;
++        velocities[i * 3 + 2] = velocities[i * 3 + 2] * 0.9 + dirZ * 0.02;
++
++        posAttr.setXYZ(
++          i,
++          px + velocities[i * 3],
++          py + velocities[i * 3 + 1],
++          pz + velocities[i * 3 + 2]
++        );
++      }
++      posAttr.needsUpdate = true;
++    }
++
++    function animate() {
++      requestAnimationFrame(animate);
++      currentSpread = THREE.MathUtils.lerp(currentSpread, spreadTarget, 0.04);
++      mapParticlesToTargets();
++      controls.update();
++      renderer.render(scene, camera);
++    }
++
++    animate();
++
++    function fingerCount(hand, handedness) {
++      const lm = hand;
++      const isRight = handedness === 'Right';
++      const tips = [4, 8, 12, 16, 20];
++      let count = 0;
++      // Thumb uses x axis due to rotation
++      if (isRight ? lm[4].x < lm[3].x : lm[4].x > lm[3].x) count += 1;
++      for (let i = 1; i < tips.length; i += 1) {
++        const tip = tips[i];
++        const pip = tip - 2;
++        if (lm[tip].y < lm[pip].y) count += 1;
++      }
++      return count;
++    }
++
++    function computeOpenness(hand) {
++      const fingertips = [8, 12, 16, 20];
++      const wrist = hand[0];
++      let sum = 0;
++      fingertips.forEach((i) => {
++        const dx = hand[i].x - wrist.x;
++        const dy = hand[i].y - wrist.y;
++        const dz = hand[i].z - wrist.z;
++        sum += Math.sqrt(dx * dx + dy * dy + dz * dz);
++      });
++      const palm = Math.sqrt(
++        Math.pow(hand[0].x - hand[9].x, 2) +
++          Math.pow(hand[0].y - hand[9].y, 2) +
++          Math.pow(hand[0].z - hand[9].z, 2)
++      );
++      const normalized = Math.min((sum / fingertips.length) / (palm * 3), 1);
++      return normalized;
++    }
++
++    function updateFromGesture(results) {
++      const hands = results.multiHandLandmarks || [];
++      const handedness = results.multiHandedness || [];
++
++      if (!hands.length) {
++        spreadTarget = 70;
++        return;
++      }
++
++      let opennessSum = 0;
++      hands.forEach((hand) => {
++        opennessSum += computeOpenness(hand);
++      });
++      const avgOpen = opennessSum / hands.length;
++      spreadTarget = THREE.MathUtils.lerp(20, 120, avgOpen);
++
++      const primaryHand = hands[0];
++      const label = handedness[0]?.label || 'Right';
++      const count = fingerCount(primaryHand, label);
++      if (count === 1 && currentText !== 'Hello') updateTextTargets('Hello');
++      if (count === 2 && currentText !== 'CSC') updateTextTargets('CSC');
++      if (count === 3 && currentText !== '666') updateTextTargets('666');
++      currentText = statusEl.innerText.replace('当前文字：', '') || currentText;
++    }
++
++    function onResults(results) {
++      canvasCtx.save();
++      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
++      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
++      if (results.multiHandLandmarks) {
++        for (const landmarks of results.multiHandLandmarks) {
++          drawLandmarks(canvasCtx, landmarks, { color: '#6fe6ff', lineWidth: 2, radius: 3 });
++        }
++      }
++      canvasCtx.restore();
++      updateFromGesture(results);
++    }
++
++    async function init() {
++      canvasElement.width = 640;
++      canvasElement.height = 480;
++      videoElement.width = 640;
++      videoElement.height = 480;
++
++      const hands = new Hands({
++        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
++      });
++      hands.setOptions({
++        maxNumHands: 2,
++        modelComplexity: 1,
++        minDetectionConfidence: 0.6,
++        minTrackingConfidence: 0.5,
++      });
++      hands.onResults(onResults);
++
++      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
++      videoElement.srcObject = stream;
++      await videoElement.play();
++
++      const cameraFeed = new Camera(videoElement, {
++        onFrame: async () => {
++          await hands.send({ image: videoElement });
++        },
++        width: 640,
++        height: 480,
++      });
++      cameraFeed.start();
++
++      statusEl.innerText = '摄像头已开启，尝试张开双手或做 1/2/3 手势';
++    }
++
++    init().catch((error) => {
++      console.error(error);
++      statusEl.innerText = '摄像头初始化失败，请检查权限设置。';
++    });
++
++    window.addEventListener('resize', () => {
++      camera.aspect = window.innerWidth / window.innerHeight;
++      camera.updateProjectionMatrix();
++      renderer.setSize(window.innerWidth, window.innerHeight);
++    });
++  </script>
++</body>
++</html>
+ 
+EOF
+)
